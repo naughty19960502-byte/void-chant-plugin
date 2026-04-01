@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    VoidChant.entitlements
+    ======================
+    Hardened Runtime entitlements for VOID CHANT VST3/AU plugin.
+
+    Key entitlements:
+      - com.apple.security.cs.allow-unsigned-executable-memory
+          Required for JIT-compiled DSP code and JUCE's internal memory
+          management. Without this, Hardened Runtime blocks execution of
+          unsigned memory pages inside the DAW process, causing the
+          "file is damaged" error on macOS 12+.
+
+      - com.apple.security.cs.disable-library-validation
+          Allows the plugin to be loaded by DAW hosts that are not signed
+          by the same team ID. Essential for third-party DAW compatibility.
+
+      - com.apple.security.cs.allow-dyld-environment-variables
+          Permits DYLD_* environment variables used by some DAW hosts
+          for plugin sandboxing and debugging.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Allow unsigned executable memory (required for JUCE DSP / JIT) -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Allow loading libraries not signed by the same team -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Allow DYLD environment variables (DAW host compatibility) -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>
