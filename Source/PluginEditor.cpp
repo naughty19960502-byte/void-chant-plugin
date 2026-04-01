@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include <BinaryData.h>
 
 // ============================================================================
 // VoidKnobLookAndFeel
@@ -111,10 +112,10 @@ void VoidKnobLookAndFeel::drawRotarySlider (
                         juce::AffineTransform::translation (
                             -arcBoundsInt.getX(), -arcBoundsInt.getY()));
                 }
-                shadow.drawForImage (g, shadowImg,
-                    juce::AffineTransform::translation (
-                        static_cast<float> (arcBoundsInt.getX()),
-                        static_cast<float> (arcBoundsInt.getY())));
+                // JUCE 7+: drawForImage takes (Graphics&, Image&) only.
+                // We composite the shadow image manually at the correct offset.
+                g.drawImageAt (shadowImg,
+                    arcBoundsInt.getX(), arcBoundsInt.getY());
             }
         }
 

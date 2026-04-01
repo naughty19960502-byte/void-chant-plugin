@@ -62,7 +62,7 @@ public:
     // -----------------------------------------------------------------------
     // Public accessors for PluginEditor
     // -----------------------------------------------------------------------
-    AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts; }
+    juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts; }
 
     /**
      * Returns the velocity-weighted envelope sum across all active voices.
@@ -76,10 +76,10 @@ public:
     float getGlowLevel() const noexcept;
 
     // -----------------------------------------------------------------------
-    static AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
 private:
-    AudioProcessorValueTreeState apvts;
+    juce::AudioProcessorValueTreeState apvts;
     juce::Synthesiser            synth;
 
     // Cathedral reverb (DEPTH)

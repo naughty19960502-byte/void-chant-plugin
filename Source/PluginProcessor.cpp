@@ -13,7 +13,7 @@ const juce::String VoidChantAudioProcessor::kParamDepth     = "depth";
 // ---------------------------------------------------------------------------
 // Parameter layout
 // ---------------------------------------------------------------------------
-AudioProcessorValueTreeState::ParameterLayout
+juce::AudioProcessorValueTreeState::ParameterLayout
 VoidChantAudioProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
