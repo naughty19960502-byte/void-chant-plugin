@@ -1,0 +1,204 @@
+name: VOID CHANT Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+
+  build-mac:
+    name: macOS Universal VST3 and AU
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Configure CMake Universal Binary
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Import signing certificate
+        env:
+          CERT_P12_B64: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12_B64" ]; then
+            echo "No signing certificate provided, skipping import."
+            exit 0
+          fi
+          KEYCHAIN_PATH="$RUNNER_TEMP/void-chant-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "$CERT_P12_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "SIGNING_ENABLED=true" >> "$GITHUB_ENV"
+
+      - name: Codesign VST3 and AU
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ "$SIGNING_ENABLED" != "true" ]; then
+            echo "Signing skipped (no certificate)."
+            exit 0
+          fi
+          sign_bundle() {
+            local path="$1"
+            if [ -n "$path" ]; then
+              codesign --force --deep --strict \
+                --options runtime \
+                --entitlements Resources/VoidChant.entitlements \
+                --sign "Developer ID Application: $APPLE_TEAM_ID" \
+                "$path"
+              echo "Signed: $path"
+            fi
+          }
+          VST3_PATH="$(find build -name '*.vst3' -type d | head -1)"
+          AU_PATH="$(find build -name '*.component' -type d | head -1)"
+          sign_bundle "$VST3_PATH"
+          sign_bundle "$AU_PATH"
+
+      - name: Package with ditto
+        run: |
+          mkdir -p artifacts/mac
+          VST3_PATH="$(find build -name '*.vst3' -type d | head -1)"
+          AU_PATH="$(find build -name '*.component' -type d | head -1)"
+          if [ -n "$VST3_PATH" ]; then
+            ditto -c -k --sequesterRsrc --keepParent \
+              "$VST3_PATH" \
+              "artifacts/mac/VOID_CHANT_VST3_Mac_Universal.zip"
+            echo "Packaged VST3"
+          else
+            echo "WARNING: VST3 not found"
+            find build -type d | head -30
+          fi
+          if [ -n "$AU_PATH" ]; then
+            ditto -c -k --sequesterRsrc --keepParent \
+              "$AU_PATH" \
+              "artifacts/mac/VOID_CHANT_AU_Mac_Universal.zip"
+            echo "Packaged AU"
+          fi
+          ls -lh artifacts/mac/
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-plugins
+          path: artifacts/mac/
+          retention-days: 30
+
+  build-windows:
+    name: Windows VST3 x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Configure CMake
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package VST3
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts\win | Out-Null
+          $vst3 = Get-ChildItem -Path build -Recurse -Filter "*.vst3" -Directory | Select-Object -First 1
+          if ($vst3) {
+            Compress-Archive -Path $vst3.FullName -DestinationPath "artifacts\win\VOID_CHANT_VST3_Win_x64.zip" -Force
+            Write-Host "Packaged: $($vst3.FullName)"
+          } else {
+            Write-Warning "VST3 not found"
+            Get-ChildItem build -Recurse | Select-Object FullName
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-plugins
+          path: artifacts\win\
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: mac-plugins
+          path: release-assets/
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: win-plugins
+          path: release-assets/
+
+      - name: List release assets
+        run: ls -lh release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: VOID CHANT Build ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## VOID CHANT ${{ github.ref_name }}
+
+            | Platform | Format | Notes |
+            |---|---|---|
+            | macOS Universal | VST3 | arm64 plus x86_64, Hardened Runtime |
+            | macOS Universal | AU | arm64 plus x86_64, Hardened Runtime |
+            | Windows x64 | VST3 | Visual Studio 2022 Release |
+
+            macOS VST3: ~/Library/Audio/Plug-Ins/VST3/
+            macOS AU: ~/Library/Audio/Plug-Ins/Components/
+            Windows VST3: C:\Program Files\Common Files\VST3\
+
+            If Gatekeeper quarantines the file:
+            xattr -dr com.apple.quarantine /path/to/VOID_CHANT.vst3
+          files: |
+            release-assets/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
