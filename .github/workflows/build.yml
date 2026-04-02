@@ -1,6 +1,5 @@
 name: VOID CHANT — Build & Release
 
-# Trigger on push to main or on version tags (v*)
 on:
   push:
     branches: [main]
@@ -8,33 +7,24 @@ on:
       - "v*"
   workflow_dispatch:
 
-# ---------------------------------------------------------------------------
-# Permissions needed for creating GitHub Releases
-# ---------------------------------------------------------------------------
 permissions:
   contents: write
 
 jobs:
-  # ===========================================================================
-  # macOS — Universal Binary (arm64 + x86_64), VST3 + AU
-  # ===========================================================================
   build-mac:
     name: macOS Universal (VST3 + AU)
-    runs-on: macos-14          # Apple Silicon runner (builds fat binaries)
+    runs-on: macos-14
 
     steps:
-      # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # -----------------------------------------------------------------------
       - name: Install dependencies (Ninja)
         run: brew install ninja
 
-      # -----------------------------------------------------------------------
       - name: Configure CMake (Universal Binary)
         run: |
           cmake -B build \
@@ -43,100 +33,82 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
 
-      # -----------------------------------------------------------------------
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      # -----------------------------------------------------------------------
-      # Codesign with Hardened Runtime
-      # Requires GitHub secrets:
-      #   APPLE_DEVELOPER_CERTIFICATE_P12  — base64-encoded .p12
-      #   APPLE_DEVELOPER_CERTIFICATE_PASSWORD
-      #   APPLE_TEAM_ID
-      # If secrets are absent (e.g., forks), this step is skipped gracefully.
-      # -----------------------------------------------------------------------
       - name: Import signing certificate
-        if: <LaTex>${{ env.APPLE_DEVELOPER_CERTIFICATE_P12 != '' }}
+        if: <LaTex>${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 != '' }}
         env:
-          APPLE_DEVELOPER_CERTIFICATE_P12: $</LaTex>{{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
-          APPLE_DEVELOPER_CERTIFICATE_PASSWORD: <LaTex>${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
+          CERT_P12_B64: $</LaTex>{{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
+          CERT_PASSWORD: <LaTex>${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
         run: |
-          KEYCHAIN_PATH="$</LaTex>RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PATH="$</LaTex>RUNNER_TEMP/void-chant-build.keychain-db"
           KEYCHAIN_PASSWORD="<LaTex>$(openssl rand -hex 16)"
 
           security create-keychain -p "$</LaTex>KEYCHAIN_PASSWORD" "<LaTex>$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$</LaTex>KEYCHAIN_PATH"
           security unlock-keychain -p "<LaTex>$KEYCHAIN_PASSWORD" "$</LaTex>KEYCHAIN_PATH"
 
-          echo "<LaTex>$APPLE_DEVELOPER_CERTIFICATE_P12" | base64 --decode \
-            > "$</LaTex>RUNNER_TEMP/cert.p12"
-
+          echo "<LaTex>$CERT_P12_B64" | base64 --decode > "$</LaTex>RUNNER_TEMP/cert.p12"
           security import "<LaTex>$RUNNER_TEMP/cert.p12" \
             -k "$</LaTex>KEYCHAIN_PATH" \
-            -P "<LaTex>$APPLE_DEVELOPER_CERTIFICATE_PASSWORD" \
+            -P "<LaTex>$CERT_PASSWORD" \
             -T /usr/bin/codesign
 
-          security list-keychains -d user -s "$</LaTex>KEYCHAIN_PATH"
+          security list-keychains -d user -s "$</LaTex>KEYCHAIN_PATH" login.keychain-db
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "<LaTex>$KEYCHAIN_PASSWORD" "$</LaTex>KEYCHAIN_PATH"
 
-      - name: Codesign VST3 (Hardened Runtime)
-        if: <LaTex>${{ env.APPLE_DEVELOPER_CERTIFICATE_P12 != '' }}
+          echo "KEYCHAIN_PATH=<LaTex>$KEYCHAIN_PATH" >> "$</LaTex>GITHUB_ENV"
+
+      - name: Codesign VST3 and AU (Hardened Runtime)
+        if: <LaTex>${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 != '' }}
         env:
-          APPLE_DEVELOPER_CERTIFICATE_P12: $</LaTex>{{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
-          APPLE_TEAM_ID: <LaTex>${{ secrets.APPLE_TEAM_ID }}
+          APPLE_TEAM_ID: $</LaTex>{{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Sign VST3
+          sign_bundle() {
+            local path="<LaTex>$1"
+            if [ -n "$</LaTex>path" ]; then
+              codesign --force --deep --strict \
+                --options runtime \
+                --entitlements Resources/VoidChant.entitlements \
+                --sign "Developer ID Application: <LaTex>$APPLE_TEAM_ID" \
+                "$</LaTex>path"
+              echo "Signed: <LaTex>$path"
+            fi
+          }
           VST3_PATH="$</LaTex>(find build -name '*.vst3' -type d | head -1)"
-          if [ -n "<LaTex>$VST3_PATH" ]; then
-            codesign --force --deep --strict \
-              --options runtime \
-              --entitlements Resources/VoidChant.entitlements \
-              --sign "Developer ID Application: $</LaTex>APPLE_TEAM_ID" \
-              "<LaTex>$VST3_PATH"
-            echo "Signed VST3: $</LaTex>VST3_PATH"
-          fi
-
-          # Sign AU (component)
           AU_PATH="<LaTex>$(find build -name '*.component' -type d | head -1)"
-          if [ -n "$</LaTex>AU_PATH" ]; then
-            codesign --force --deep --strict \
-              --options runtime \
-              --entitlements Resources/VoidChant.entitlements \
-              --sign "Developer ID Application: <LaTex>$APPLE_TEAM_ID" \
-              "$</LaTex>AU_PATH"
-            echo "Signed AU: $AU_PATH"
-          fi
+          sign_bundle "$</LaTex>VST3_PATH"
+          sign_bundle "<LaTex>$AU_PATH"
 
-      # -----------------------------------------------------------------------
-      # Package using ditto (preserves macOS metadata, symlinks, permissions)
-      # This avoids the "file is damaged" error caused by plain zip.
-      # -----------------------------------------------------------------------
       - name: Package with ditto (metadata-safe)
         run: |
           mkdir -p artifacts/mac
 
-          VST3_PATH="$(find build -name '*.vst3' -type d | head -1)"
+          VST3_PATH="$</LaTex>(find build -name '*.vst3' -type d | head -1)"
           AU_PATH="<LaTex>$(find build -name '*.component' -type d | head -1)"
 
           if [ -n "$</LaTex>VST3_PATH" ]; then
             ditto -c -k --sequesterRsrc --keepParent \
               "<LaTex>$VST3_PATH" \
               "artifacts/mac/VOID_CHANT_VST3_Mac_Universal.zip"
-            echo "Packaged VST3"
+            echo "Packaged VST3: $</LaTex>VST3_PATH"
+          else
+            echo "WARNING: VST3 not found"
+            find build -type d | head -30
           fi
 
-          if [ -n "$</LaTex>AU_PATH" ]; then
+          if [ -n "<LaTex>$AU_PATH" ]; then
             ditto -c -k --sequesterRsrc --keepParent \
-              "$AU_PATH" \
+              "$</LaTex>AU_PATH" \
               "artifacts/mac/VOID_CHANT_AU_Mac_Universal.zip"
-            echo "Packaged AU"
+            echo "Packaged AU: $AU_PATH"
           fi
 
           ls -lh artifacts/mac/
 
-      # -----------------------------------------------------------------------
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -144,22 +116,17 @@ jobs:
           path: artifacts/mac/
           retention-days: 30
 
-  # ===========================================================================
-  # Windows — VST3 (x64)
-  # ===========================================================================
   build-windows:
     name: Windows VST3 (x64)
     runs-on: windows-latest
 
     steps:
-      # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # -----------------------------------------------------------------------
       - name: Configure CMake
         run: |
           cmake -B build `
@@ -167,11 +134,9 @@ jobs:
             -A x64 `
             -DCMAKE_BUILD_TYPE=Release
 
-      # -----------------------------------------------------------------------
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      # -----------------------------------------------------------------------
       - name: Package VST3
         shell: pwsh
         run: |
@@ -190,18 +155,13 @@ jobs:
             Get-ChildItem build -Recurse | Select-Object FullName
           }
 
-      # -----------------------------------------------------------------------
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: win-plugins
-          path: artifacts/win/
+          path: artifacts\win\
           retention-days: 30
 
-  # ===========================================================================
-  # Release — create GitHub Release and attach all artifacts
-  # Runs only on version tags (v*)
-  # ===========================================================================
   release:
     name: Publish GitHub Release
     needs: [build-mac, build-windows]
@@ -209,7 +169,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      # -----------------------------------------------------------------------
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
@@ -222,11 +181,9 @@ jobs:
           name: win-plugins
           path: release-assets/
 
-      # -----------------------------------------------------------------------
       - name: List release assets
         run: ls -lh release-assets/
 
-      # -----------------------------------------------------------------------
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -238,29 +195,20 @@ jobs:
           body: |
             ## VOID CHANT — ${{ github.ref_name }}
 
-            ### Downloads
-
             | Platform | Format | Notes |
             |---|---|---|
             | macOS (Universal) | VST3 | arm64 + x86_64, Hardened Runtime signed |
             | macOS (Universal) | AU | arm64 + x86_64, Hardened Runtime signed |
             | Windows (x64) | VST3 | Visual Studio 2022 Release build |
 
-            ### Installation
+            **macOS VST3:** `~/Library/Audio/Plug-Ins/VST3/`
+            **macOS AU:** `~/Library/Audio/Plug-Ins/Components/`
+            **Windows VST3:** `C:\Program Files\Common Files\VST3\`
 
-            **macOS VST3:** Extract and copy `.vst3` to `~/Library/Audio/Plug-Ins/VST3/`
-            **macOS AU:** Extract and copy `.component` to `~/Library/Audio/Plug-Ins/Components/`
-            **Windows VST3:** Extract and copy `.vst3` to `C:\Program Files\Common Files\VST3\`
-
-            ### Mac "File Damaged" Prevention
-
-            All macOS builds are signed with Hardened Runtime and packaged via
-            `ditto --sequesterRsrc` to preserve extended attributes and symlinks.
-            If Gatekeeper quarantines the file, run:
+            If Gatekeeper quarantines the file:
             ```
             xattr -dr com.apple.quarantine /path/to/VOID\ CHANT.vst3
             ```
-
           files: |
             release-assets/*.zip
         env:
